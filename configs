@@ -1,0 +1,117 @@
+Para configurar o RabbitMQ para alto desempenho em uma arquitetura com microserviços, é essencial otimizar tanto o RabbitMQ quanto o Spring Boot. Abaixo estão algumas configurações avançadas para garantir um fluxo de mensagens eficiente e minimizar a latência.
+
+### 1. Configurações de Desempenho no RabbitMQ
+
+#### a) Aumentar o Throughput de Mensagens
+
+- **Desativar confirmações automáticas**: Configurar manualmente o `ack` somente após o processamento completo evita o excesso de confirmações e melhora o desempenho.
+- **Confirmações Assíncronas**: Configurar o *publisher confirms* para operar de forma assíncrona é mais rápido que confirmar a entrega de mensagens síncronas.
+
+```properties
+spring.rabbitmq.publisher-confirms=true
+spring.rabbitmq.template.mandatory=true
+```
+
+- **Prefetch Count**: Definir um prefetch count adequado permite que cada consumidor processe várias mensagens ao mesmo tempo, aumentando a eficiência. Um valor inicial recomendado é de 50 a 100 para workloads altos.
+
+```java
+public class CustomContainerFactory {
+
+    @Bean
+    public SimpleRabbitListenerContainerFactory highPerformanceContainerFactory(ConnectionFactory connectionFactory) {
+        SimpleRabbitListenerContainerFactory factory = new SimpleRabbitListenerContainerFactory();
+        factory.setConnectionFactory(connectionFactory);
+        factory.setPrefetchCount(100); // Ajustar com base nas necessidades
+        factory.setConcurrentConsumers(10); // Múltiplos consumidores para cada fila
+        factory.setMaxConcurrentConsumers(20); // Máximo de consumidores para escalabilidade
+        return factory;
+    }
+}
+```
+
+#### b) Otimizar a Persistência de Mensagens
+
+- **Evitar filas duráveis e mensagens persistentes** para mensagens de baixa prioridade ou que não precisam ser mantidas após reinicializações, pois isso aumenta a performance ao armazenar as mensagens na memória.
+- **Ativar lazy queues** para armazenar mensagens inativas em disco em vez de em memória, ideal para filas que recebem picos de mensagens.
+
+```bash
+rabbitmqctl set_policy Lazy ".*" '{"queue-mode":"lazy"}'
+```
+
+#### c) Configurações de Memória e Disco
+
+- **Tamanho da Memória**: Configure o RabbitMQ para começar a descarregar mensagens no disco quando o uso de memória alcançar 50-70%.
+  
+  ```bash
+  rabbitmqctl set_vm_memory_high_watermark 0.7
+  ```
+
+- **Disco de Alto Desempenho**: Utilize SSDs para armazenamento de mensagens persistentes, o que reduz significativamente a latência.
+
+### 2. Configuração no Spring Boot para Alto Desempenho
+
+#### a) Reduzir a Latência do RabbitTemplate
+
+Use uma instância `RabbitTemplate` com pooling de conexões para reutilizar conexões e reduzir o overhead.
+
+```java
+@Bean
+public RabbitTemplate rabbitTemplate(ConnectionFactory connectionFactory) {
+    RabbitTemplate rabbitTemplate = new RabbitTemplate(connectionFactory);
+    rabbitTemplate.setChannelTransacted(true); // Para mensagens transacionais, se necessário
+    return rabbitTemplate;
+}
+```
+
+#### b) Configurar o Prefetch e a Concorrência
+
+Ajustar a quantidade de mensagens que cada consumidor processa antes de enviar uma confirmação (prefetch) e a concorrência dos consumidores para cada fila aumenta a taxa de processamento.
+
+```java
+@Bean
+public SimpleRabbitListenerContainerFactory rabbitListenerContainerFactory(ConnectionFactory connectionFactory) {
+    SimpleRabbitListenerContainerFactory factory = new SimpleRabbitListenerContainerFactory();
+    factory.setConnectionFactory(connectionFactory);
+    factory.setPrefetchCount(50); // Controle de quantas mensagens processar
+    factory.setConcurrentConsumers(5); // Consumidores concorrentes para processar em paralelo
+    factory.setMaxConcurrentConsumers(15); // Número máximo de consumidores em caso de alta demanda
+    return factory;
+}
+```
+
+#### c) Configurar Caching de Conexão
+
+O caching de conexões e canais reduz o overhead de conexão constante, o que melhora o desempenho em ambientes com alto tráfego.
+
+```java
+@Bean
+public CachingConnectionFactory cachingConnectionFactory() {
+    CachingConnectionFactory connectionFactory = new CachingConnectionFactory("localhost");
+    connectionFactory.setCacheMode(CacheMode.CHANNEL); // Cache de canais para melhorar desempenho
+    connectionFactory.setChannelCacheSize(25); // Tamanho do cache de canais, ajustar conforme necessário
+    return connectionFactory;
+}
+```
+
+### 3. Balanceamento de Carga e Escalabilidade
+
+- **Distribuir Consumidores em Vários Nós**: Escalar horizontalmente os consumidores em múltiplos pods/instâncias permite lidar com picos de carga.
+- **Monitoramento com Prometheus e Grafana**: Use plugins de monitoramento como Prometheus e Grafana para monitorar o RabbitMQ, identificar gargalos e ajustar configurações.
+- **Auto-Scaling**: Configure *auto-scaling* para aumentar o número de consumidores dinamicamente baseado na carga.
+
+### 4. Uso de Dead Letter Exchanges e Retries
+
+Utilize **Dead Letter Exchanges (DLX)** para encaminhar mensagens não processadas corretamente para filas de erro, permitindo processamento assíncrono e evitando que mensagens travem o sistema.
+
+```java
+@Bean
+public Queue mainQueue() {
+    return QueueBuilder.durable("main.queue")
+            .withArgument("x-dead-letter-exchange", "deadLetterExchange")
+            .build();
+}
+```
+
+### Resumo
+
+Essas configurações visam otimizar o RabbitMQ para alto desempenho em um ambiente de microserviços, ajustando o uso de prefetch, consumidores concorrentes, caching e persistência. Esse setup permite que o RabbitMQ suporte uma carga mais alta e reduza a latência de entrega de mensagens, garantindo maior eficiência e escalabilidade.
